@@ -20,13 +20,15 @@ def cli():
 @click.option("--min-edge", default=0.05, help="Minimum edge to show (0.05 = 5%)")
 @click.option("--min-liquidity", default=5000, help="Minimum market liquidity in USD")
 @click.option("--trade/--no-trade", default=False, help="Auto-open paper positions on opportunities")
-def scan(min_edge: float, min_liquidity: float, trade: bool):
+@click.option("--mock", is_flag=True, help="Skip Claude API — use synthetic data (free, for pipeline testing)")
+def scan(min_edge: float, min_liquidity: float, trade: bool, mock: bool):
     """Scan news + markets, find opportunities, optionally paper-trade."""
     from ingester.sources import fetch_all
     from polymarket.client import fetch_markets
-    from analyst.analyst import find_opportunities
-    from trader.paper_trader import PaperTrader
     from dashboard.display import show_opportunities, show_portfolio
+
+    if mock:
+        console.print("[bold yellow][MOCK MODE][/bold yellow] No Claude API calls will be made.\n")
 
     console.print("[bold cyan]Polyscope[/bold cyan] — scanning news and markets...")
 
@@ -38,9 +40,18 @@ def scan(min_edge: float, min_liquidity: float, trade: bool):
         markets = fetch_markets(limit=200)
     console.print(f"  [green]✓[/green] {len(markets)} active markets loaded")
 
-    with console.status("Analyzing opportunities (this takes ~30s)..."):
-        opportunities = find_opportunities(news, markets, min_edge=min_edge, min_liquidity=min_liquidity)
-    console.print(f"  [green]✓[/green] {len(opportunities)} opportunities found above {min_edge:.0%} edge\n")
+    if mock:
+        from analyst.mock import mock_opportunities
+        opportunities = mock_opportunities(news, markets, min_edge=min_edge)
+        console.print(f"  [yellow]~[/yellow] {len(opportunities)} mock opportunities generated\n")
+    else:
+        from analyst.analyst import find_opportunities
+        from analyst.cache import stats as cache_stats
+        cs = cache_stats()
+        console.print(f"  [dim]Cache: {cs['fresh_entries']} fresh / {cs['total_entries']} total entries[/dim]")
+        with console.status("Analyzing opportunities (Claude)..."):
+            opportunities = find_opportunities(news, markets, min_edge=min_edge, min_liquidity=min_liquidity)
+        console.print(f"  [green]✓[/green] {len(opportunities)} opportunities found above {min_edge:.0%} edge\n")
 
     show_opportunities(opportunities)
 
@@ -62,6 +73,21 @@ def scan(min_edge: float, min_liquidity: float, trade: bool):
         show_portfolio(trader)
     elif opportunities:
         console.print("\n[dim]Run with --trade to auto-open paper positions.[/dim]")
+
+
+@cli.command("cache-stats")
+def cache_stats_cmd():
+    """Show analysis cache stats (how many API calls are being saved)."""
+    from analyst.cache import stats, clear as cache_clear
+    s = stats()
+    console.print(f"Cache entries: [bold]{s['fresh_entries']} fresh[/bold] / {s['total_entries']} total (TTL {s['ttl_hours']}h)")
+
+@cli.command("cache-clear")
+def cache_clear_cmd():
+    """Clear the analysis cache (forces re-analysis on next scan)."""
+    from analyst.cache import clear as cache_clear
+    cache_clear()
+    console.print("[yellow]Cache cleared.[/yellow]")
 
 
 @cli.command()

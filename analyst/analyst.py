@@ -8,6 +8,7 @@ from typing import Optional
 
 from ingester.sources import NewsItem
 from polymarket.client import Market
+from analyst import cache as analysis_cache
 
 
 ANALYST_MODEL = os.getenv("ANALYST_MODEL", "claude-opus-4-8")
@@ -72,6 +73,24 @@ Return only the JSON array, no other text."""
 
 def analyze_opportunity(news_items: list[NewsItem], market: Market) -> Optional[Opportunity]:
     """Deep analysis: use Opus to assess edge on a specific market given news."""
+    news_ids = [n.id for n in news_items]
+    cached = analysis_cache.get(news_ids, market.condition_id)
+    if cached:
+        result = cached
+        side = result.get("side", "YES")
+        market_price = market.yes_price if side == "YES" else market.no_price
+        return Opportunity(
+            market=market,
+            news=news_items,
+            side=side,
+            market_price=market_price,
+            analyst_prob=float(result["analyst_prob"]),
+            edge=float(result["analyst_prob"]) - market_price,
+            confidence=result.get("confidence", "low"),
+            rationale="[cached] " + result.get("rationale", ""),
+            risk_flags=result.get("risk_flags", []),
+        )
+
     news_block = "\n\n".join(
         f"Source: {n.source}\nTitle: {n.title}\nBody: {n.body[:500]}" for n in news_items
     )
@@ -114,6 +133,7 @@ Return JSON only:
     )
     try:
         result = json.loads(msg.content[0].text)
+        analysis_cache.put(news_ids, market.condition_id, result)
         side = result.get("side", "YES")
         market_price = market.yes_price if side == "YES" else market.no_price
         analyst_prob = float(result["analyst_prob"])
